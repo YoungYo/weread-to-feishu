@@ -146,7 +146,12 @@
 </script>
 
 <div class="topbar">
-  <div class="title">微信读书 -> 飞书文档</div>
+  <div class="title-wrap">
+    <div class="title">微信读书 -> 飞书文档</div>
+    <a class="help-link" href="https://my.feishu.cn/docx/FmaLd3ugyobkZux7jbUc6qQPn0e" target="_blank" rel="noreferrer">
+      帮助文档
+    </a>
+  </div>
   <button class="sync-btn" on:click={syncToFeishu} disabled={loadingBooks || configLoading || syncState.status === "running"}>
     {#if syncState.status === "running"}
       同步中...
@@ -229,10 +234,28 @@
     margin-bottom: 14px;
   }
 
+  .title-wrap {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    min-width: 0;
+  }
+
   .title {
     font-size: 18px;
     font-weight: 700;
     color: #12213a;
+  }
+
+  .help-link {
+    font-size: 12px;
+    color: #2563eb;
+    text-decoration: none;
+    white-space: nowrap;
+  }
+
+  .help-link:hover {
+    text-decoration: underline;
   }
 
   .sync-btn {
