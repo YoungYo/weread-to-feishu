@@ -225,6 +225,13 @@
 
 <div class={`status-bar ${syncState.status}`}>{syncState.message}</div>
 
+<div class="support-section">
+  <div class="support-title">支持一下</div>
+  <p>如果这个插件帮到了你，欢迎扫码赞赏~</p>
+  <img src="https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=微信收款码链接" alt="赞赏码" class="qr-code" />
+  <p class="support-hint">（替换成你的收款码链接）</p>
+</div>
+
 <style>
   .topbar {
     display: flex;
@@ -421,6 +428,41 @@
     background: #fef2f2;
     border-color: #fca5a5;
     color: #991b1b;
+  }
+
+  .support-section {
+    margin-top: 16px;
+    text-align: center;
+    padding: 12px;
+    background: #fff9e6;
+    border: 1px solid #fde68a;
+    border-radius: 10px;
+  }
+
+  .support-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: #92400e;
+    margin-bottom: 6px;
+  }
+
+  .support-section p {
+    margin: 0 0 8px;
+    font-size: 12px;
+    color: #a16207;
+  }
+
+  .qr-code {
+    width: 120px;
+    height: 120px;
+    border-radius: 8px;
+    margin: 8px 0;
+  }
+
+  .support-hint {
+    font-size: 11px !important;
+    color: #a16207 !important;
+    opacity: 0.7;
   }
 
   @media (max-width: 900px) {
