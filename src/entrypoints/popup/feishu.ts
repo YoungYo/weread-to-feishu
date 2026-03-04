@@ -74,16 +74,77 @@ export async function getTenantAccessToken(input: FeishuAuthInput): Promise<stri
   return token;
 }
 
-export function extractDocToken(docUrl: string): FeishuDocIds {
+type ParsedFeishuTarget =
+  | { kind: "docx"; token: string; url: string }
+  | { kind: "wiki"; token: string; url: string };
+
+function parseFeishuTarget(docUrl: string): ParsedFeishuTarget {
   const trimmed = docUrl.trim();
-  const match = trimmed.match(/\/docx\/([a-zA-Z0-9]+)/);
-  if (!match) {
-    throw new Error("Invalid Feishu doc URL. Expect format like https://xxx.feishu.cn/docx/XXXX");
+  if (!trimmed) {
+    throw new Error("请填写飞书文档地址");
+  }
+
+  let pathname = "";
+  try {
+    pathname = new URL(trimmed).pathname;
+  } catch {
+    throw new Error("飞书文档地址格式不正确");
+  }
+
+  const docxMatch = pathname.match(/\/docx\/([a-zA-Z0-9]+)/);
+  if (docxMatch) {
+    return {
+      kind: "docx",
+      token: docxMatch[1],
+      url: trimmed,
+    };
+  }
+
+  const wikiMatch = pathname.match(/\/wiki\/([a-zA-Z0-9]+)/);
+  if (wikiMatch) {
+    return {
+      kind: "wiki",
+      token: wikiMatch[1],
+      url: trimmed,
+    };
+  }
+
+  throw new Error("无效的飞书地址，需为 /docx/ 或 /wiki/ 链接");
+}
+
+export async function resolveDocToken(docUrl: string, token: string): Promise<FeishuDocIds> {
+  const target = parseFeishuTarget(docUrl);
+
+  if (target.kind === "docx") {
+    return {
+      docToken: target.token,
+      url: target.url,
+    };
+  }
+
+  const response = await fetch(`${FEISHU_API_BASE}/wiki/v2/spaces/get_node?token=${encodeURIComponent(target.token)}`, {
+    method: "GET",
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+
+  const data = ensureOk(await readJsonResponse(response, "Get wiki node info"), "Get wiki node info");
+  const node = (data?.data as { node?: { obj_token?: unknown; obj_type?: unknown } })?.node;
+  const objToken = typeof node?.obj_token === "string" ? node.obj_token.trim() : "";
+  const objType = typeof node?.obj_type === "string" ? node.obj_type : "";
+
+  if (!objToken) {
+    throw new Error("Wiki 节点未返回 obj_token，无法解析文档 ID");
+  }
+
+  if (objType && objType !== "docx") {
+    throw new Error(`Wiki 节点类型为 ${objType}，当前仅支持 docx 文档同步`);
   }
 
   return {
-    docToken: match[1],
-    url: trimmed,
+    docToken: objToken,
+    url: target.url,
   };
 }
 
@@ -122,43 +183,122 @@ export async function deleteBlocksByIndexRange(docToken: string, token: string, 
   ensureOk(await readJsonResponse(response, "Delete document blocks"), "Delete document blocks");
 }
 
-export async function convertMarkdownToBlocks(markdown: string, token: string): Promise<{ blocks: unknown[]; firstLevelIds: string[] }> {
-  const response = await fetch(`${FEISHU_API_BASE}/docx/v1/documents/convert`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      content_type: "markdown",
-      content: markdown,
-    }),
-  });
+type FeishuBlock = Record<string, unknown>;
 
-  const data = ensureOk(await readJsonResponse(response, "Convert markdown to Feishu blocks"), "Convert markdown to Feishu blocks");
-  const payload = (data?.data ?? {}) as { blocks?: unknown[]; first_level_block_ids?: string[] };
-
-  return {
-    blocks: payload.blocks ?? [],
-    firstLevelIds: payload.first_level_block_ids ?? [],
-  };
+function textElement(content: string, style?: Record<string, unknown>): Record<string, unknown> {
+  const el: Record<string, unknown> = { text_run: { content } };
+  if (style) {
+    (el.text_run as Record<string, unknown>).text_element_style = style;
+  }
+  return el;
 }
 
-export async function appendBlocks(docToken: string, token: string, children: unknown[]): Promise<void> {
-  if (!children.length) {
-    return;
+function textBlock(content: string, style?: Record<string, unknown>): FeishuBlock {
+  return { block_type: 2, text: { elements: [textElement(content, style)], style: {} } };
+}
+
+function headingBlock(level: number, content: string): FeishuBlock {
+  const key = `heading${level}`;
+  return { block_type: 2 + level, [key]: { elements: [textElement(content)], style: {} } };
+}
+
+function dividerBlock(): FeishuBlock {
+  return { block_type: 22, divider: {} };
+}
+
+function bulletBlock(content: string): FeishuBlock {
+  return { block_type: 12, bullet: { elements: [textElement(content)], style: {} } };
+}
+
+function quoteBlock(content: string): FeishuBlock {
+  return { block_type: 15, quote: { elements: [textElement(content)], style: {} } };
+}
+
+function markdownToBlocks(markdown: string): FeishuBlock[] {
+  const blocks: FeishuBlock[] = [];
+  const lines = markdown.split("\n");
+  let i = 0;
+
+  while (i < lines.length) {
+    const line = lines[i];
+
+    if (line.trim() === "") {
+      i++;
+      continue;
+    }
+
+    if (line.trim() === "---") {
+      blocks.push(dividerBlock());
+      i++;
+      continue;
+    }
+
+    const h1Match = line.match(/^# (.+)/);
+    if (h1Match) {
+      blocks.push(headingBlock(1, h1Match[1]));
+      i++;
+      continue;
+    }
+
+    const h2Match = line.match(/^## (.+)/);
+    if (h2Match) {
+      blocks.push(headingBlock(2, h2Match[1]));
+      i++;
+      continue;
+    }
+
+    const h3Match = line.match(/^### (.+)/);
+    if (h3Match) {
+      blocks.push(headingBlock(3, h3Match[1]));
+      i++;
+      continue;
+    }
+
+    const bulletMatch = line.match(/^- (.+)/);
+    if (bulletMatch) {
+      blocks.push(bulletBlock(bulletMatch[1]));
+      i++;
+      continue;
+    }
+
+    const quoteMatch = line.match(/^> (.+)/);
+    if (quoteMatch) {
+      const quoteLines = [quoteMatch[1]];
+      i++;
+      while (i < lines.length && lines[i].startsWith("> ")) {
+        quoteLines.push(lines[i].slice(2));
+        i++;
+      }
+      blocks.push(quoteBlock(quoteLines.join("\n")));
+      continue;
+    }
+
+    if (line.trim()) {
+      blocks.push(textBlock(line));
+    }
+    i++;
   }
 
-  const response = await fetch(`${FEISHU_API_BASE}/docx/v1/documents/${docToken}/blocks/${docToken}/children`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ children }),
-  });
+  return blocks;
+}
 
-  ensureOk(await readJsonResponse(response, "Create document blocks"), "Create document blocks");
+const BATCH_SIZE = 50;
+
+async function appendBlocks(docToken: string, token: string, children: FeishuBlock[]): Promise<void> {
+  for (let start = 0; start < children.length; start += BATCH_SIZE) {
+    const batch = children.slice(start, start + BATCH_SIZE);
+
+    const response = await fetch(`${FEISHU_API_BASE}/docx/v1/documents/${docToken}/blocks/${docToken}/children`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ children: batch }),
+    });
+
+    ensureOk(await readJsonResponse(response, "Create document blocks"), "Create document blocks");
+  }
 }
 
 export async function overwriteDocWithMarkdown(docToken: string, token: string, markdown: string): Promise<void> {
@@ -167,13 +307,6 @@ export async function overwriteDocWithMarkdown(docToken: string, token: string, 
     await deleteBlocksByIndexRange(docToken, token, 0, items.length);
   }
 
-  const converted = await convertMarkdownToBlocks(markdown, token);
-
-  const idSet = new Set(converted.firstLevelIds);
-  const sortedBlocks = converted.firstLevelIds
-    .map((id) => (converted.blocks as Array<{ block_id?: string }>).find((b) => b.block_id === id))
-    .filter(Boolean);
-  const remaining = (converted.blocks as Array<{ block_id?: string }>).filter((b) => !idSet.has(b.block_id ?? ""));
-
-  await appendBlocks(docToken, token, [...sortedBlocks, ...remaining]);
+  const blocks = markdownToBlocks(markdown);
+  await appendBlocks(docToken, token, blocks);
 }

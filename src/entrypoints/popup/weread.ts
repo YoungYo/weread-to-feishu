@@ -20,6 +20,42 @@ export async function fetchNotebookBooks(): Promise<BookBrief[]> {
   return books;
 }
 
+function normalizeChapterUid(value: unknown): string | null {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  const key = String(value).trim();
+  return key ? key : null;
+}
+
+function parseRangeStart(range: string): number {
+  const start = Number(range.split("-")[0]);
+  return Number.isFinite(start) ? start : Number.MAX_SAFE_INTEGER;
+}
+
+function normalizeUnixSeconds(value: unknown): number {
+  const num = Number(value);
+  if (!Number.isFinite(num) || num <= 0) {
+    return Number.MAX_SAFE_INTEGER;
+  }
+  return num > 1_000_000_000_000 ? Math.floor(num / 1000) : Math.floor(num);
+}
+
+function formatUnixTime(value: unknown): string {
+  const seconds = normalizeUnixSeconds(value);
+  if (seconds === Number.MAX_SAFE_INTEGER) {
+    return "未知";
+  }
+  return new Date(seconds * 1000).toLocaleString();
+}
+
+function toBlockQuote(text: string): string {
+  return text
+    .split("\n")
+    .map((line) => `> ${line.trimEnd()}`)
+    .join("\n");
+}
+
 export async function fetchBookMarkdown(bookId: string, userVid: string): Promise<string> {
   const [markData, reviewData, progressData] = await Promise.all([
     fetch(`https://weread.qq.com/web/book/bookmarklist?bookId=${bookId}`, {
@@ -38,106 +74,167 @@ export async function fetchBookMarkdown(bookId: string, userVid: string): Promis
 
   const title = markData?.book?.title ?? "未知书名";
   const author = markData?.book?.author ?? "未知作者";
-  const chapters: Array<{ chapterUid?: string; title?: string; chapterIdx?: number }> = markData?.chapters ?? [];
+  const chapters: Array<{ chapterUid?: string | number; title?: string; chapterIdx?: number }> = markData?.chapters ?? [];
   const markList: Array<{
-    chapterUid?: string;
-    type?: number;
+    chapterUid?: string | number;
+    type?: number | string;
     markText?: string;
     range?: string;
     chapterTitle?: string;
+    createTime?: number | string;
   }> = markData?.updated ?? [];
   const reviewList: Array<{
     review?: {
-      chapterUid?: string;
-      type?: number;
+      chapterUid?: string | number;
+      type?: number | string;
       range?: string;
       content?: string;
       abstract?: string;
       chapterTitle?: string;
+      chapterIdx?: number;
+      createTime?: number | string;
     };
   }> = reviewData?.reviews ?? [];
 
-  const chapterTitleMap = new Map<string, string>();
-  chapters.forEach((ch) => {
-    if (ch.chapterUid) {
-      chapterTitleMap.set(ch.chapterUid, ch.title ?? `章节 ${ch.chapterIdx ?? ""}`.trim());
-    }
-  });
-
-  type MarkItem = {
-    range: string;
-    markText: string;
-    reviewText: string;
+  type ChapterMeta = {
+    title: string;
+    chapterIdx: number;
   };
 
-  const grouped = new Map<string, MarkItem[]>();
-  for (const mark of markList) {
-    if (mark.type !== 1 || !mark.chapterUid) continue;
-    const list = grouped.get(mark.chapterUid) ?? [];
-    list.push({
-      range: mark.range ?? "",
-      markText: mark.markText ?? "",
-      reviewText: "",
+  type NoteItem = {
+    kind: "highlight" | "comment";
+    range: string;
+    text: string;
+    abstract?: string;
+    createdAtText: string;
+    createdAtOrder: number;
+  };
+
+  const chapterMetaMap = new Map<string, ChapterMeta>();
+  for (const chapter of chapters) {
+    const key = normalizeChapterUid(chapter.chapterUid);
+    if (!key) continue;
+
+    chapterMetaMap.set(key, {
+      title: chapter.title ?? `章节 ${chapter.chapterIdx ?? key}`,
+      chapterIdx: chapter.chapterIdx ?? Number.MAX_SAFE_INTEGER,
     });
-    grouped.set(mark.chapterUid, list);
+  }
+
+  const grouped = new Map<string, NoteItem[]>();
+
+  for (const mark of markList) {
+    const chapterKey = normalizeChapterUid(mark.chapterUid);
+    if (Number(mark.type) !== 1 || !chapterKey) continue;
+
+    const markText = (mark.markText ?? "").trim();
+    if (!markText) continue;
+
+    const list = grouped.get(chapterKey) ?? [];
+    list.push({
+      kind: "highlight",
+      range: mark.range ?? "",
+      text: markText,
+      createdAtText: formatUnixTime(mark.createTime),
+      createdAtOrder: normalizeUnixSeconds(mark.createTime),
+    });
+    grouped.set(chapterKey, list);
+
+    if (!chapterMetaMap.has(chapterKey)) {
+      chapterMetaMap.set(chapterKey, {
+        title: mark.chapterTitle ?? `章节 ${chapterKey}`,
+        chapterIdx: Number.MAX_SAFE_INTEGER,
+      });
+    }
   }
 
   for (const reviewWrap of reviewList) {
     const review = reviewWrap.review;
-    if (!review || review.type !== 1 || !review.chapterUid) continue;
-    const list = grouped.get(review.chapterUid) ?? [];
-    const existing = list.find((item) => item.range === (review.range ?? ""));
-    if (existing) {
-      existing.reviewText = review.content ?? "";
-    } else {
-      list.push({
-        range: review.range ?? "",
-        markText: review.abstract ?? "",
-        reviewText: review.content ?? "",
+    const chapterKey = normalizeChapterUid(review?.chapterUid);
+    if (!review || Number(review.type) !== 1 || !chapterKey) continue;
+
+    const commentText = (review.content ?? "").trim();
+    if (!commentText) continue;
+
+    const list = grouped.get(chapterKey) ?? [];
+    list.push({
+      kind: "comment",
+      range: review.range ?? "",
+      text: commentText,
+      abstract: (review.abstract ?? "").trim(),
+      createdAtText: formatUnixTime(review.createTime),
+      createdAtOrder: normalizeUnixSeconds(review.createTime),
+    });
+    grouped.set(chapterKey, list);
+
+    if (!chapterMetaMap.has(chapterKey)) {
+      chapterMetaMap.set(chapterKey, {
+        title: review.chapterTitle ?? `章节 ${chapterKey}`,
+        chapterIdx: review.chapterIdx ?? Number.MAX_SAFE_INTEGER,
       });
     }
-    grouped.set(review.chapterUid, list);
   }
 
   const reading = progressData?.book;
-  const startText = reading?.startReadingTime
-    ? new Date(reading.startReadingTime * 1000).toLocaleString()
-    : "未知";
-  const finishText = reading?.finishTime
-    ? new Date(reading.finishTime * 1000).toLocaleString()
-    : "未知";
+  const startText = reading?.startReadingTime ? formatUnixTime(reading.startReadingTime) : "未知";
+  const finishText = reading?.finishTime ? formatUnixTime(reading.finishTime) : "未知";
   const readHours = reading?.readingTime ? Math.floor(reading.readingTime / 3600) : 0;
 
-  const totalNotes = Array.from(grouped.values()).reduce((acc, list) => acc + list.length, 0);
+  const allNotes = Array.from(grouped.values()).flat();
+  const highlightCount = allNotes.filter((item) => item.kind === "highlight").length;
+  const commentCount = allNotes.filter((item) => item.kind === "comment").length;
+  const totalNotes = allNotes.length;
 
   let md = `# ${title}\n\n`;
   md += `- 作者：${author}\n`;
-  md += `- 笔记数量：${totalNotes}\n`;
+  md += `- 笔记总数：${totalNotes}\n`;
+  md += `- 划线数量：${highlightCount}\n`;
+  md += `- 评论数量：${commentCount}\n`;
   md += `- 阅读时长：${readHours} 小时\n`;
   md += `- 开始时间：${startText}\n`;
   md += `- 结束时间：${finishText}\n\n`;
   md += `---\n\n`;
 
-  for (const chapter of chapters.sort((a, b) => (a.chapterIdx ?? 0) - (b.chapterIdx ?? 0))) {
-    const chapterUid = chapter.chapterUid;
-    if (!chapterUid) continue;
-    const notes = grouped.get(chapterUid) ?? [];
+  const orderedChapterKeys = Array.from(grouped.keys()).sort((leftKey, rightKey) => {
+    const leftMeta = chapterMetaMap.get(leftKey);
+    const rightMeta = chapterMetaMap.get(rightKey);
+    const leftIdx = leftMeta?.chapterIdx ?? Number.MAX_SAFE_INTEGER;
+    const rightIdx = rightMeta?.chapterIdx ?? Number.MAX_SAFE_INTEGER;
+
+    if (leftIdx !== rightIdx) {
+      return leftIdx - rightIdx;
+    }
+
+    return leftKey.localeCompare(rightKey, "zh-CN", { numeric: true });
+  });
+
+  for (const chapterKey of orderedChapterKeys) {
+    const notes = grouped.get(chapterKey) ?? [];
     if (!notes.length) continue;
 
-    notes.sort((a, b) => {
-      const left = Number((a.range || "0").split("-")[0]);
-      const right = Number((b.range || "0").split("-")[0]);
-      return left - right;
+    notes.sort((left, right) => {
+      const byRange = parseRangeStart(left.range) - parseRangeStart(right.range);
+      if (byRange !== 0) {
+        return byRange;
+      }
+      return left.createdAtOrder - right.createdAtOrder;
     });
 
-    md += `## ${chapterTitleMap.get(chapterUid) ?? chapter.title ?? "未命名章节"}\n\n`;
+    const chapterTitle = chapterMetaMap.get(chapterKey)?.title ?? `章节 ${chapterKey}`;
+    md += `## ${chapterTitle}\n\n`;
+
     for (const note of notes) {
-      if (note.reviewText.trim()) {
-        md += `${note.reviewText.trim()}\n\n`;
+      if (note.kind === "highlight") {
+        md += `[划线] | 创建时间：${note.createdAtText}\n\n`;
+        md += `${toBlockQuote(note.text)}\n\n`;
+      } else {
+        md += `[评论] | 创建时间：${note.createdAtText}\n\n`;
+        md += `${note.text}\n\n`;
+        if (note.abstract) {
+          md += `${toBlockQuote(note.abstract)}\n\n`;
+        }
       }
-      if (note.markText.trim()) {
-        md += `> ${note.markText.trim()}\n\n`;
-      }
+
       md += `---\n\n`;
     }
   }

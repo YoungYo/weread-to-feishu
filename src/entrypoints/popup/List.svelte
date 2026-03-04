@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { extractDocToken, getTenantAccessToken, overwriteDocWithMarkdown } from "./feishu";
+  import { getTenantAccessToken, overwriteDocWithMarkdown, resolveDocToken } from "./feishu";
   import { loadConfig, saveConfig } from "./storage";
   import type { BookBrief, FeishuConfig, SyncState } from "./types";
   import { fetchBookMarkdown, fetchNotebookBooks } from "./weread";
@@ -91,12 +91,12 @@
 
       await persistConfig();
 
-      const { docToken } = extractDocToken(config.docUrl);
       const token = await getTenantAccessToken({
         appId: config.appId.trim(),
         appSecret: config.appSecret.trim(),
         tenantAccessToken: config.tenantAccessToken.trim(),
       });
+      const { docToken } = await resolveDocToken(config.docUrl, token);
 
       const ordered = books.filter((book) => selectedBookIds.has(book.bookId));
       const markdownPieces: string[] = [];
@@ -152,7 +152,7 @@
     <h3>飞书配置</h3>
     <label>
       文档地址
-      <input bind:value={config.docUrl} placeholder="https://xxx.feishu.cn/docx/xxxx" on:change={persistConfig} />
+      <input bind:value={config.docUrl} placeholder="https://xxx.feishu.cn/docx/xxxx 或 /wiki/xxxx" on:change={persistConfig} />
     </label>
     <label>
       App ID
