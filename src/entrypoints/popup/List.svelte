@@ -121,9 +121,12 @@
       };
     } catch (error) {
       console.error(error);
+      const msg = error instanceof Error ? error.message : "同步失败，请重试。";
       syncState = {
         status: "error",
-        message: error instanceof Error ? error.message : "同步失败，请重试。",
+        message: msg.includes("Unexpected non-whitespace character after JSON")
+          ? "接口返回格式异常（可能是 token 失效、租户不匹配或命中网关拦截），请重新获取 token 后重试。"
+          : msg,
       };
     }
   }

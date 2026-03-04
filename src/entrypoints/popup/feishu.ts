@@ -1,5 +1,7 @@
 const FEISHU_API_BASE = "https://open.feishu.cn/open-apis";
 
+type JsonObject = Record<string, unknown>;
+
 export type FeishuAuthInput = {
   appId: string;
   appSecret: string;
@@ -11,8 +13,34 @@ export type FeishuDocIds = {
   url: string;
 };
 
+function sanitizeJsonText(raw: string): string {
+  return raw
+    .replace(/^\uFEFF/, "")
+    .replace(/^\)\]\}',?\s*/, "")
+    .replace(/^for\s*\(;;\);\s*/i, "")
+    .trim();
+}
+
+async function readJsonResponse(response: Response, action: string): Promise<JsonObject> {
+  const raw = await response.text();
+  const cleaned = sanitizeJsonText(raw);
+
+  if (!cleaned) {
+    throw new Error(`${action} failed: empty response (HTTP ${response.status})`);
+  }
+
+  try {
+    return JSON.parse(cleaned) as JsonObject;
+  } catch {
+    throw new Error(`${action} 返回了非 JSON 响应（HTTP ${response.status}）：${raw.slice(0, 180)}`);
+  }
+}
+
 function ensureOk<T extends { code?: number; msg?: string }>(res: T, action: string): T {
   if (res.code && res.code !== 0) {
+    if ((res.msg ?? "").toLowerCase().includes("forbidden")) {
+      throw new Error(`${action} failed: forbidden（应用权限或文档授权不足）`);
+    }
     throw new Error(`${action} failed: ${res.msg ?? "unknown error"}`);
   }
   return res;
@@ -38,11 +66,12 @@ export async function getTenantAccessToken(input: FeishuAuthInput): Promise<stri
     }),
   });
 
-  const data = ensureOk(await response.json(), "Get tenant_access_token");
-  if (!data.tenant_access_token) {
+  const data = ensureOk(await readJsonResponse(response, "Get tenant_access_token"), "Get tenant_access_token");
+  const token = data.tenant_access_token;
+  if (typeof token !== "string" || !token) {
     throw new Error("No tenant_access_token returned from Feishu.");
   }
-  return data.tenant_access_token;
+  return token;
 }
 
 export function extractDocToken(docUrl: string): FeishuDocIds {
@@ -58,7 +87,10 @@ export function extractDocToken(docUrl: string): FeishuDocIds {
   };
 }
 
-export async function listRootBlocks(docToken: string, token: string): Promise<Array<{ block_id: string; block_type?: number; parent_id?: string }>> {
+export async function listRootBlocks(
+  docToken: string,
+  token: string,
+): Promise<Array<{ block_id: string; block_type?: number; parent_id?: string }>> {
   const response = await fetch(`${FEISHU_API_BASE}/docx/v1/documents/${docToken}/blocks/${docToken}/children?page_size=500`, {
     method: "GET",
     headers: {
@@ -66,8 +98,8 @@ export async function listRootBlocks(docToken: string, token: string): Promise<A
     },
   });
 
-  const data = ensureOk(await response.json(), "List document blocks");
-  return data?.data?.items ?? [];
+  const data = ensureOk(await readJsonResponse(response, "List document blocks"), "List document blocks");
+  return (data?.data as { items?: Array<{ block_id: string; block_type?: number; parent_id?: string }> })?.items ?? [];
 }
 
 export async function deleteBlocksByIndexRange(docToken: string, token: string, startIndex: number, endIndex: number): Promise<void> {
@@ -87,7 +119,7 @@ export async function deleteBlocksByIndexRange(docToken: string, token: string, 
     }),
   });
 
-  ensureOk(await response.json(), "Delete document blocks");
+  ensureOk(await readJsonResponse(response, "Delete document blocks"), "Delete document blocks");
 }
 
 export async function convertMarkdownToBlocks(markdown: string, token: string): Promise<{ blocks: unknown[]; firstLevelIds: string[] }> {
@@ -103,10 +135,12 @@ export async function convertMarkdownToBlocks(markdown: string, token: string): 
     }),
   });
 
-  const data = ensureOk(await response.json(), "Convert markdown to Feishu blocks");
+  const data = ensureOk(await readJsonResponse(response, "Convert markdown to Feishu blocks"), "Convert markdown to Feishu blocks");
+  const payload = (data?.data ?? {}) as { blocks?: unknown[]; first_level_block_ids?: string[] };
+
   return {
-    blocks: data?.data?.blocks ?? [],
-    firstLevelIds: data?.data?.first_level_block_ids ?? [],
+    blocks: payload.blocks ?? [],
+    firstLevelIds: payload.first_level_block_ids ?? [],
   };
 }
 
@@ -124,7 +158,7 @@ export async function appendBlocks(docToken: string, token: string, children: un
     body: JSON.stringify({ children }),
   });
 
-  ensureOk(await response.json(), "Create document blocks");
+  ensureOk(await readJsonResponse(response, "Create document blocks"), "Create document blocks");
 }
 
 export async function overwriteDocWithMarkdown(docToken: string, token: string, markdown: string): Promise<void> {
