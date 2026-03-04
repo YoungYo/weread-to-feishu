@@ -1,0 +1,36 @@
+html,
+body {
+  position: relative;
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  min-width: 820px;
+  min-height: 560px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  color: #1f2b43;
+  background: radial-gradient(circle at 20% 20%, #edf4ff 0%, #f6f9ff 45%, #eef2ff 100%);
+  font-family: "Segoe UI", "PingFang SC", "Microsoft Yahei", sans-serif;
+}
+
+a {
+  color: #2563eb;
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+input,
+button,
+select,
+textarea {
+  font-family: inherit;
+  font-size: 14px;
+}
