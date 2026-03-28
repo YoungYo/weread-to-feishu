@@ -1,4 +1,4 @@
-<h1 align="center">WeRead to Feishu</h1>
+<h1 align="center">WeRead Export</h1>
 <div align="center">
 将微信读书笔记导出为本地 Markdown，并支持同步到飞书云文档（覆盖写入）
 </div>
